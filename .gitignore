@@ -1,0 +1,11 @@
+datalist/*.csv
+data/transforms.py
+
+.vscode/
+__pycache__/
+slurm_out/
+slurm_templates/
+
+nnFormer/
+Pytorch-UNet/
+nnUNet/
