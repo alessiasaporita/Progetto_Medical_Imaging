@@ -2,17 +2,198 @@ import torch.nn.functional as F
 import torch
 import logging
 import torch.nn as nn
+import numpy as np
+from torch import nn, Tensor
+softmax_helper = lambda x: F.softmax(x, 1)
 
 
-__all__ = ['sigmoid_dice_loss','softmax_dice_loss','GeneralizedDiceLoss','FocalLoss', 'dice_loss']
+class RobustCrossEntropyLoss(nn.CrossEntropyLoss):
+    """
+    this is just a compatibility layer because my target tensor is float and has an extra dimension
+    """
+    def forward(self, input: Tensor, target: Tensor) -> Tensor:
+        if len(target.shape) == len(input.shape):
+            assert target.shape[1] == 1
+            target = target[:, 0]
+        return super().forward(input, target.long())
 
-cross_entropy = F.cross_entropy
-softmax = nn.Softmax(dim=1)
+def sum_tensor(inp, axes, keepdim=False):
+    axes = np.unique(axes).astype(int)
+    if keepdim:
+        for ax in axes:
+            inp = inp.sum(int(ax), keepdim=True)
+    else:
+        for ax in sorted(axes, reverse=True):
+            inp = inp.sum(int(ax))
+    return inp
 
-def dice_loss(output, target, num_cls=5, eps=1e-7):
-    output = softmax(output) #(B, C, 128, 128, 128)
+def get_tp_fp_fn_tn(net_output, gt, axes=None, mask=None, square=False):
+    """
+    net_output must be (b, c, x, y(, z)))
+    gt must be a label map (shape (b, 1, x, y(, z)) OR shape (b, x, y(, z))) or one hot encoding (b, c, x, y(, z))
+    if mask is provided it must have shape (b, 1, x, y(, z)))
+    :param net_output:
+    :param gt:
+    :param axes: can be (, ) = no summation
+    :param mask: mask must be 1 for valid pixels and 0 for invalid pixels
+    :param square: if True then fp, tp and fn will be squared before summation
+    :return:
+    """
+    if axes is None:
+        axes = tuple(range(2, len(net_output.size())))
+
+    shp_x = net_output.shape
+    shp_y = gt.shape
+
+    with torch.no_grad():
+        if len(shp_x) != len(shp_y):
+            gt = gt.view((shp_y[0], 1, *shp_y[1:]))
+
+        if all([i == j for i, j in zip(net_output.shape, gt.shape)]):
+            # if this is the case then gt is probably already a one hot encoding
+            y_onehot = gt
+        else:
+            gt = gt.long()
+            y_onehot = torch.zeros(shp_x)
+            if net_output.device.type == "cuda":
+                y_onehot = y_onehot.cuda(net_output.device.index)
+            y_onehot.scatter_(1, gt, 1)
+
+    tp = net_output * y_onehot
+    fp = net_output * (1 - y_onehot)
+    fn = (1 - net_output) * y_onehot
+    tn = (1 - net_output) * (1 - y_onehot)
+
+    if mask is not None:
+        tp = torch.stack(tuple(x_i * mask[:, 0] for x_i in torch.unbind(tp, dim=1)), dim=1)
+        fp = torch.stack(tuple(x_i * mask[:, 0] for x_i in torch.unbind(fp, dim=1)), dim=1)
+        fn = torch.stack(tuple(x_i * mask[:, 0] for x_i in torch.unbind(fn, dim=1)), dim=1)
+        tn = torch.stack(tuple(x_i * mask[:, 0] for x_i in torch.unbind(tn, dim=1)), dim=1)
+
+    if square:
+        tp = tp ** 2
+        fp = fp ** 2
+        fn = fn ** 2
+        tn = tn ** 2
+
+    if len(axes) > 0:
+        tp = sum_tensor(tp, axes, keepdim=False)
+        fp = sum_tensor(fp, axes, keepdim=False)
+        fn = sum_tensor(fn, axes, keepdim=False)
+        tn = sum_tensor(tn, axes, keepdim=False)
+
+    return tp, fp, fn, tn
+
+class SoftDiceLoss(nn.Module):
+    def __init__(self, apply_nonlin=None, batch_dice=False, do_bg=True, smooth=1.):
+        """
+        """
+        super(SoftDiceLoss, self).__init__()
+
+        self.do_bg = do_bg
+        self.batch_dice = batch_dice
+        self.apply_nonlin = apply_nonlin
+        self.smooth = smooth
+
+    def forward(self, x, y, loss_mask=None):
+        shp_x = x.shape
+
+        if self.batch_dice:
+            axes = [0] + list(range(2, len(shp_x)))
+        else:
+            axes = list(range(2, len(shp_x)))
+
+        if self.apply_nonlin is not None:
+            x = self.apply_nonlin(x)
+
+        tp, fp, fn, _ = get_tp_fp_fn_tn(x, y, axes, loss_mask, False)
+
+        nominator = 2 * tp + self.smooth
+        denominator = 2 * tp + fp + fn + self.smooth
+
+        dc = nominator / (denominator + 1e-8)
+
+        if not self.do_bg:
+            if self.batch_dice:
+                dc = dc[1:]
+            else:
+                dc = dc[:, 1:]
+        dc = dc.mean()
+
+        return -dc
+class DC_and_CE_loss(nn.Module):
+    def __init__(self, soft_dice_kwargs, ce_kwargs, aggregate="sum", square_dice=False, weight_ce=1, weight_dice=1,
+                 log_dice=False, ignore_label=None):
+        """
+        CAREFUL. Weights for CE and Dice do not need to sum to one. You can set whatever you want.
+        :param soft_dice_kwargs:
+        :param ce_kwargs:
+        :param aggregate:
+        :param square_dice:
+        :param weight_ce:
+        :param weight_dice:
+        """
+        super(DC_and_CE_loss, self).__init__()
+        if ignore_label is not None:
+            assert not square_dice, 'not implemented'
+            ce_kwargs['reduction'] = 'none'
+        self.log_dice = log_dice
+        self.weight_dice = weight_dice
+        self.weight_ce = weight_ce
+        self.aggregate = aggregate
+        self.ce = RobustCrossEntropyLoss(**ce_kwargs)
+
+        self.ignore_label = ignore_label
+        self.dc = SoftDiceLoss(apply_nonlin=softmax_helper, **soft_dice_kwargs)
+
+
+    def forward(self, net_output, target):
+        """
+        target must be b, c, x, y(, z) with c=1
+        :param net_output:
+        :param target:
+        :return:
+        """
+        if self.ignore_label is not None: 
+            assert target.shape[1] == 1, 'not implemented for one hot encoding'
+            mask = target != self.ignore_label
+            target[~mask] = 0
+            mask = mask.float()
+        else:
+            mask = None
+
+        dc_loss = self.dc(net_output, target, loss_mask=mask) if self.weight_dice != 0 else 0
+        if self.log_dice:
+            dc_loss = -torch.log(-dc_loss)
+
+        ce_loss = self.ce(net_output, target[:, 0].long()) if self.weight_ce != 0 else 0
+        if self.ignore_label is not None:
+            ce_loss *= mask[:, 0]
+            ce_loss = ce_loss.sum() / mask.sum()
+
+        if self.aggregate == "sum":
+            result = self.weight_ce * ce_loss + self.weight_dice * dc_loss
+        else:
+            raise NotImplementedError("nah son") # reserved for other stuff (later)
+        return result, ce_loss, dc_loss
     
-    target = target.float()
+
+def dice_loss(output, target, num_cls, eps=1e-7):
+    p = F.softmax(output, 1)
+    dice = 0.0; n = 0
+    for i in range(1, num_cls):                 
+        num = (p[:,i] * target[:,i]).sum()
+        den = p[:,i].sum() + target[:,i].sum()
+        dice += 2.0 * num / (den + eps)
+        n += 1
+
+    return 1.0 - dice / max(n,1)
+
+""""
+def dice_loss(output, target, num_cls=5, eps=1e-7):
+    output = F.softmax(output, 1)
+    #target = target.float()
+
     for i in range(num_cls):
         num = torch.sum(output[:,i,:,:,:] * target[:,i,:,:,:])
         l = torch.sum(output[:,i,:,:,:])
@@ -22,9 +203,11 @@ def dice_loss(output, target, num_cls=5, eps=1e-7):
         else:
             dice += 2.0 * num / (l+r+eps)
     return 1.0 - 1.0 * dice / num_cls
+"""
 
 def softmax_weighted_loss(output, target, num_cls=5):
-    target = target.float() #(B, 4, 128, 128, 128)
+    output = F.softmax(output, 1)
+    #target = target.float() #(B, 4, 128, 128, 128)
     B, _, H, W, Z = output.size() #(B, C, 128, 128, 128)
     for i in range(num_cls):
         outputi = output[:, i, :, :, :] #(B, 128, 128, 128)
@@ -37,117 +220,5 @@ def softmax_weighted_loss(output, target, num_cls=5):
             cross_loss += -1.0 * weighted * targeti * torch.log(torch.clamp(outputi, min=0.005, max=1)).float()
     cross_loss = torch.mean(cross_loss)
     return cross_loss
-            
-def softmax_loss(output, target, num_cls=5):
-    target = target.float()
-    _, _, H, W, Z = output.size()
-    for i in range(num_cls):
-        outputi = output[:, i, :, :, :]
-        targeti = target[:, i, :, :, :]
-        if i == 0:
-            cross_loss = -1.0 * targeti * torch.log(torch.clamp(outputi, min=0.005, max=1)).float()
-        else:
-            cross_loss += -1.0 * targeti * torch.log(torch.clamp(outputi, min=0.005, max=1)).float()
-    cross_loss = torch.mean(cross_loss)
-    return cross_loss
 
-def dice(output, target,eps =1e-5): # soft dice loss
-    target = target.float()
-    # num = 2*(output*target).sum() + eps
-    num = 2*(output*target).sum()
-    den = output.sum() + target.sum() + eps
-    return 1.0 - num/den
-
-def sigmoid_dice_loss(output, target,alpha=1e-5):
-    # output: [-1,3,H,W,T]
-    # target: [-1,H,W,T] noted that it includes 0,1,2,4 here
-    loss1 = dice(output[:,0,...],(target==1).float(),eps=alpha)
-    loss2 = dice(output[:,1,...],(target==2).float(),eps=alpha)
-    loss3 = dice(output[:,2,...],(target == 4).float(),eps=alpha)
-    logging.info('1:{:.4f} | 2:{:.4f} | 4:{:.4f}'.format(1-loss1.data, 1-loss2.data, 1-loss3.data))
-    return loss1+loss2+loss3
-
-
-def softmax_dice_loss(output, target,eps=1e-5): #
-    # output : [bsize,c,H,W,D]
-    # target : [bsize,H,W,D]
-    loss1 = dice(output[:,1,...],(target==1).float())
-    loss2 = dice(output[:,2,...],(target==2).float())
-    loss3 = dice(output[:,3,...],(target==4).float())
-    logging.info('1:{:.4f} | 2:{:.4f} | 4:{:.4f}'.format(1-loss1.data, 1-loss2.data, 1-loss3.data))
-
-    return loss1+loss2+loss3
-
-
-# Generalised Dice : 'Generalised dice overlap as a deep learning loss function for highly unbalanced segmentations'
-def GeneralizedDiceLoss(output,target,eps=1e-5,weight_type='square'): # Generalized dice loss
-    """
-        Generalised Dice : 'Generalised dice overlap as a deep learning loss function for highly unbalanced segmentations'
-    """
-
-    # target = target.float()
-    if target.dim() == 4:
-        target[target == 4] = 3 # label [4] -> [3]
-        target = expand_target(target, n_class=output.size()[1]) # [N,H,W,D] -> [N,4，H,W,D]
-
-    output = flatten(output)[1:,...] # transpose [N,4，H,W,D] -> [4，N,H,W,D] -> [3, N*H*W*D] voxels
-    target = flatten(target)[1:,...] # [class, N*H*W*D]
-
-    target_sum = target.sum(-1) # sub_class_voxels [3,1] -> 3个voxels
-    if weight_type == 'square':
-        class_weights = 1. / (target_sum * target_sum + eps)
-    elif weight_type == 'identity':
-        class_weights = 1. / (target_sum + eps)
-    elif weight_type == 'sqrt':
-        class_weights = 1. / (torch.sqrt(target_sum) + eps)
-    else:
-        raise ValueError('Check out the weight_type :',weight_type)
-
-    # print(class_weights)
-    intersect = (output * target).sum(-1)
-    intersect_sum = (intersect * class_weights).sum()
-    denominator = (output + target).sum(-1)
-    denominator_sum = (denominator * class_weights).sum() + eps
-
-    loss1 = 2*intersect[0] / (denominator[0] + eps)
-    loss2 = 2*intersect[1] / (denominator[1] + eps)
-    loss3 = 2*intersect[2] / (denominator[2] + eps)
-    #logging.info('1:{:.4f} | 2:{:.4f} | 4:{:.4f}'.format(loss1.data, loss2.data, loss3.data))
-
-    return 1 - 2. * intersect_sum / denominator_sum, [loss1.data, loss2.data, loss3.data]
-
-
-def expand_target(x, n_class,mode='softmax'):
-    """
-        Converts NxDxHxW label image to NxCxDxHxW, where each label is stored in a separate channel
-        :param input: 4D input image (NxDxHxW)
-        :param C: number of channels/labels
-        :return: 5D output image (NxCxDxHxW)
-        """
-    assert x.dim() == 4
-    shape = list(x.size())
-    shape.insert(1, n_class)
-    shape = tuple(shape)
-    xx = torch.zeros(shape)
-    if mode.lower() == 'softmax':
-        xx[:,1,:,:,:] = (x == 1)
-        xx[:,2,:,:,:] = (x == 2)
-        xx[:,3,:,:,:] = (x == 3)
-    if mode.lower() == 'sigmoid':
-        xx[:,0,:,:,:] = (x == 1)
-        xx[:,1,:,:,:] = (x == 2)
-        xx[:,2,:,:,:] = (x == 3)
-    return xx.to(x.device)
-
-def flatten(tensor):
-    """Flattens a given tensor such that the channel axis is first.
-    The shapes are transformed as follows:
-       (N, C, D, H, W) -> (C, N * D * H * W)
-    """
-    C = tensor.size(1)
-    # new axis order
-    axis_order = (1, 0) + tuple(range(2, tensor.dim()))
-    # Transpose: (N, C, D, H, W) -> (C, N, D, H, W)
-    transposed = tensor.permute(axis_order)
-    # Flatten: (C, N, D, H, W) -> (C, N * D * H * W)
-    return transposed.reshape(C, -1)
+   

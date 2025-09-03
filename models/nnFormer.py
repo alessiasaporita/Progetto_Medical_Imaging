@@ -3,7 +3,7 @@ from copy import deepcopy
 from torch import nn
 import torch
 import numpy as np
-from neural_network import SegmentationNetwork
+from models.neural_network import SegmentationNetwork
 import torch.nn.functional
 import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
@@ -81,7 +81,7 @@ class SwinTransformerBlock_kv(nn.Module):
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
        
-    def forward(self, x, mask_matrix,skip=None,x_up=None):
+    def forward(self, x, mask_matrix, skip=None, x_up=None):
         B, L, C = x.shape
         S, H, W = self.input_resolution
  
@@ -184,7 +184,7 @@ class WindowAttention_kv(nn.Module):
         trunc_normal_(self.relative_position_bias_table, std=.02)
 
 
-    def forward(self, skip,x_up,pos_embed=None, mask=None):
+    def forward(self, skip, x_up, pos_embed=None, mask=None):
         B_, N, C = skip.shape
         
         kv = self.kv(skip)
@@ -285,7 +285,7 @@ class WindowAttention(nn.Module):
         attn = self.attn_drop(attn)
 
         x = (attn @ v).transpose(1, 2).reshape(B_, N, C).contiguous()
-        if pos_embed is not None:
+        if pos_embed is not None: # None
             x = x+pos_embed
         x = self.proj(x)
         x = self.proj_drop(x)
@@ -298,11 +298,11 @@ class SwinTransformerBlock(nn.Module):
                  act_layer=nn.GELU, norm_layer=nn.LayerNorm):
         super().__init__()
         self.dim = dim
-        self.input_resolution = input_resolution
-        self.num_heads = num_heads
-        self.window_size = window_size
-        self.shift_size = shift_size
-        self.mlp_ratio = mlp_ratio
+        self.input_resolution = input_resolution        # (32, 32, 32)
+        self.num_heads = num_heads                      # 3, 6, 12, 24
+        self.window_size = window_size                  # 4, 4, 8, 4
+        self.shift_size = shift_size                    # 0 - 2
+        self.mlp_ratio = mlp_ratio                      # 4.0
    
         if min(self.input_resolution) <= self.window_size:
             # if window size is larger than input resolution, we don't partition windows
@@ -326,7 +326,6 @@ class SwinTransformerBlock(nn.Module):
         
        
     def forward(self, x, mask_matrix):
-
         B, L, C = x.shape
         S, H, W = self.input_resolution
    
@@ -346,26 +345,27 @@ class SwinTransformerBlock(nn.Module):
 
         # cyclic shift
         if self.shift_size > 0:
-            shifted_x = torch.roll(x, shifts=(-self.shift_size, -self.shift_size,-self.shift_size), dims=(1, 2,3))
+            shifted_x = torch.roll(x, shifts=(-self.shift_size, -self.shift_size,-self.shift_size), dims=(1, 2, 3))
             attn_mask = mask_matrix
         else:
-            shifted_x = x
+            shifted_x = x       #(B, 32, 32, 32, C)
             attn_mask = None
        
         # partition windows
+        # (B, S, H, W, C) -> (num_windows * B, window_size, window_size, window_size, C)
+        #                     num_windows = (S // window_size) * (H // window_size) * (W // window_size)   
         x_windows = window_partition(shifted_x, self.window_size)  # nW*B, window_size, window_size, C
-        x_windows = x_windows.view(-1, self.window_size * self.window_size * self.window_size,
-                                   C)  
+        x_windows = x_windows.view(-1, self.window_size * self.window_size * self.window_size, C)  
 
         # W-MSA/SW-MSA
-        attn_windows = self.attn(x_windows, mask=attn_mask,pos_embed=None)  
+        attn_windows = self.attn(x_windows, mask=attn_mask, pos_embed=None)  
 
         # merge windows
         attn_windows = attn_windows.view(-1, self.window_size, self.window_size, self.window_size, C)
         shifted_x = window_reverse(attn_windows, self.window_size, Sp, Hp, Wp) 
 
         # reverse cyclic shift
-        if self.shift_size > 0:
+        if self.shift_size > 0: # 0
             x = torch.roll(shifted_x, shifts=(self.shift_size, self.shift_size, self.shift_size), dims=(1, 2, 3))
         else:
             x = shifted_x
@@ -382,17 +382,13 @@ class SwinTransformerBlock(nn.Module):
         return x
 
 class PatchMerging(nn.Module):
-  
-
     def __init__(self, dim, norm_layer=nn.LayerNorm):
         super().__init__()
         self.dim = dim
-        self.reduction = nn.Conv3d(dim,dim*2,kernel_size=3,stride=2,padding=1)
-       
+        self.reduction = nn.Conv3d(dim, dim*2, kernel_size=3, stride=2, padding=1)
         self.norm = norm_layer(dim)
 
     def forward(self, x, S, H, W):
-
         B, L, C = x.shape
         assert L == H * W * S, "input feature has wrong size"
         x = x.view(B, S, H, W, C)
@@ -409,19 +405,15 @@ class Patch_Expanding(nn.Module):
     def __init__(self, dim, norm_layer=nn.LayerNorm):
         super().__init__()
         self.dim = dim
-       
         self.norm = norm_layer(dim)
-        self.up=nn.ConvTranspose3d(dim,dim//2,2,2)
-    def forward(self, x, S, H, W):
-      
-        
+        self.up=nn.ConvTranspose3d(dim, dim//2, 2, 2)
+
+    def forward(self, x, S, H, W):        
         B, L, C = x.shape
         assert L == H * W * S, "input feature has wrong size"
 
         x = x.view(B, S, H, W, C)
 
-       
-        
         x = self.norm(x)
         x=x.permute(0,4,1,2,3).contiguous()
         x = self.up(x)
@@ -447,9 +439,9 @@ class BasicLayer(nn.Module):
                  downsample=True
                  ):
         super().__init__()
-        self.window_size = window_size
-        self.shift_size = window_size // 2
-        self.depth = depth
+        self.window_size = window_size      # 4
+        self.shift_size = window_size // 2  # 2
+        self.depth = depth                  # 2
         # build blocks
         
         self.blocks = nn.ModuleList([
@@ -500,9 +492,10 @@ class BasicLayer(nn.Module):
                                          self.window_size * self.window_size * self.window_size)  
         attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
         attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
+
         for blk in self.blocks:
-          
             x = blk(x, attn_mask)
+
         if self.downsample is not None:
             x_down = self.downsample(x, S, H, W)
             Ws, Wh, Ww = (S + 1) // 2, (H + 1) // 2, (W + 1) // 2
@@ -568,7 +561,7 @@ class BasicLayer_up(nn.Module):
 
         
         self.Upsample = upsample(dim=2*dim, norm_layer=norm_layer)
-    def forward(self, x,skip, S, H, W):
+    def forward(self, x, skip, S, H, W):
         
       
         x_up = self.Upsample(x, S, H, W)
@@ -602,7 +595,7 @@ class BasicLayer_up(nn.Module):
         attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
         attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
         
-        x = self.blocks[0](x, attn_mask,skip=skip,x_up=x_up)
+        x = self.blocks[0](x, attn_mask, skip=skip, x_up=x_up)
         for i in range(self.depth-1):
             x = self.blocks[i+1](x,attn_mask)
         
@@ -679,7 +672,6 @@ class PatchEmbed(nn.Module):
         return x
 
 class Encoder(nn.Module):
-   
     def __init__(self,
                  pretrain_img_size=224,
                  patch_size=4,
@@ -700,12 +692,11 @@ class Encoder(nn.Module):
                  ):
         super().__init__()
 
-        self.pretrain_img_size = pretrain_img_size
-
-        self.num_layers = len(depths)
-        self.embed_dim = embed_dim
-        self.patch_norm = patch_norm
-        self.out_indices = out_indices
+        self.pretrain_img_size = pretrain_img_size #(128, 128, 128)
+        self.num_layers = len(depths)       # 4
+        self.embed_dim = embed_dim          # 96
+        self.patch_norm = patch_norm        # True
+        self.out_indices = out_indices      # (0, 1, ,2, 3)
 
         # split image into non-overlapping patches
         self.patch_embed = PatchEmbed(
@@ -753,13 +744,12 @@ class Encoder(nn.Module):
 
     def forward(self, x):
         """Forward function."""
-        
-        x = self.patch_embed(x)
+        x = self.patch_embed(x)     # (B, 96, 32, 32, 32)
         down=[]
        
         Ws, Wh, Ww = x.size(2), x.size(3), x.size(4)
         
-        x = x.flatten(2).transpose(1, 2).contiguous()
+        x = x.flatten(2).transpose(1, 2).contiguous()   #(B, 32*32*32, 96)
         x = self.pos_drop(x)
       
         for i in range(self.num_layers):
@@ -800,7 +790,6 @@ class Decoder(nn.Module):
         # build layers
         self.layers = nn.ModuleList()
         for i_layer in range(self.num_layers)[::-1]:
-            
             layer = BasicLayer_up(
                 dim=int(embed_dim * 2 ** (len(depths)-i_layer-1)),
                 input_resolution=(
@@ -821,8 +810,8 @@ class Decoder(nn.Module):
                 )
             self.layers.append(layer)
         self.num_features = [int(embed_dim * 2 ** i) for i in range(self.num_layers)]
-    def forward(self,x,skips):
-            
+
+    def forward(self,x,skips): 
         outs=[]
         S, H, W = x.size(2), x.size(3), x.size(4)
         x = x.flatten(2).transpose(1, 2).contiguous()
@@ -832,29 +821,24 @@ class Decoder(nn.Module):
         x = self.pos_drop(x)
             
         for i in range(self.num_layers)[::-1]:
-            
             layer = self.layers[i]
-            
-            x, S, H, W,  = layer(x,skips[i], S, H, W)
+            x, S, H, W,  = layer(x, skips[i], S, H, W)
             out = x.view(-1, S, H, W, self.num_features[i])
             outs.append(out)
         return outs
       
 class final_patch_expanding(nn.Module):
-    def __init__(self,dim,num_class,patch_size):
+    def __init__(self,dim, num_class, patch_size):
         super().__init__()
-        self.up=nn.ConvTranspose3d(dim,num_class,patch_size,patch_size)
+        self.up=nn.ConvTranspose3d(dim, num_class, patch_size, patch_size)
       
     def forward(self,x):
         x=x.permute(0,4,1,2,3).contiguous()
         x=self.up(x)
-      
-        
         return x    
 
                                          
 class nnFormer(SegmentationNetwork):
-
     def __init__(self, crop_size=[64,128,128],
                 embedding_dim=192,
                 input_channels=1, 
@@ -884,9 +868,9 @@ class nnFormer(SegmentationNetwork):
         self.final=[]
         if self.do_ds:
             for i in range(len(depths)-1):
-                self.final.append(final_patch_expanding(embed_dim*2**i,num_classes,patch_size=patch_size))
+                self.final.append(final_patch_expanding(embed_dim*2**i, num_classes, patch_size=patch_size))
         else:
-            self.final.append(final_patch_expanding(embed_dim,num_classes,patch_size=patch_size))
+            self.final.append(final_patch_expanding(embed_dim, num_classes, patch_size=patch_size))
     
         self.final=nn.ModuleList(self.final)
     
@@ -894,13 +878,13 @@ class nnFormer(SegmentationNetwork):
     def forward(self, x):
         seg_outputs=[]
         skips = self.model_down(x)
-        neck=skips[-1]
+        neck=skips[-1]              # (B, 768, 4, 4, 4)
         out=self.decoder(neck, skips)
         
         if self.do_ds:
             for i in range(len(out)):  
                 seg_outputs.append(self.final[-(i+1)](out[i]))
-            return seg_outputs[::-1]
+            return seg_outputs[::-1] #reverse order
         else:
             seg_outputs.append(self.final[0](out[-1]))
             return seg_outputs[-1]

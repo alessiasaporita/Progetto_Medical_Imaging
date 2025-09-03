@@ -1,7 +1,7 @@
 import os
 import torch
 from torch.utils.data import Dataset
-from .transforms import *
+from data.data_augmentation import *
 import pandas as pd
 import ast
 import numpy as np
@@ -11,34 +11,6 @@ join = os.path.join
 import pandas as pd
 import random
 
-#patch_size = 128
-
-"""
-def get_crop_slice(target_size, dim):
-    # dim is the ori shape
-    if dim > target_size:
-        crop_extent = dim - target_size
-        left = random.randint(0, crop_extent)
-        right = crop_extent - left
-        return slice(left, dim - right)
-    elif dim <= target_size:
-        return slice(0, dim)
-    
-def pad_or_crop_image(image, seg=None, target_size=(128, 128, 128), indices=None):
-    c, x, y, z= image.shape
-    # Generate slices for cropping based on target size
-    x_slice, y_slice, z_slice = [get_crop_slice(target, dim) for target, dim in zip(target_size, (x, y, z))]
-    xmin, ymin, zmin = [int(arr.start) for arr in (x_slice, y_slice, z_slice)]
-    xmax, ymax, zmax = [int(arr.stop) for arr in (x_slice, y_slice, z_slice)]
-    crop_indexes=[[xmin, xmax], [ymin, ymax], [zmin, zmax]]
-    
-    # Apply slicing 
-    image = image[:, x_slice, y_slice, z_slice]
-    # If segmentation exists, apply the same slice to it
-    if seg is not None:
-        seg = seg[x_slice, y_slice, z_slice]
-    return image, seg, crop_indexes
-"""
 class Brats_loadall_nii(Dataset):
     def __init__(self, transforms='', root=None, num_cls=4, train_file='train.txt'):
         data_file_path = os.path.join('/work/H2020DeciderFicarra/asaporita/Progetto_AI_Medical_Imaging', train_file)
@@ -65,18 +37,19 @@ class Brats_loadall_nii(Dataset):
 
         x,y = self.transforms([x, y])
 
-        x = np.ascontiguousarray(x.transpose(0, 4, 1, 2, 3))# [Bsize,channels,Height,Width,Depth]
+        x = np.ascontiguousarray(x.transpose(0, 4, 1, 2, 3)) # [B, C, H, W, D]
+
         _, H, W, Z = np.shape(y)
-        
-        y = np.reshape(y, (-1)) # Flatten the segmentation mask
-        one_hot_targets = np.eye(self.num_cls)[y] # Convert to one-hot encoding where each voxel is represented as a vector of length num_cls
+        y_flatten = np.reshape(y, (-1)) # Flatten the segmentation mask
+        one_hot_targets = np.eye(self.num_cls)[y_flatten] # Convert to one-hot encoding where each voxel is represented as a vector of length num_cls
         yo = np.reshape(one_hot_targets, (1, H, W, Z, -1)) # Reshape back to 3D
         yo = np.ascontiguousarray(yo.transpose(0, 4, 1, 2, 3))  # Reorder dimensions
-
-        x = torch.squeeze(torch.from_numpy(x), dim=0)
         yo = torch.squeeze(torch.from_numpy(yo), dim=0)
 
-        return x, yo, name
+        x = torch.squeeze(torch.from_numpy(x), dim=0)
+        y = torch.squeeze(torch.from_numpy(y), dim=0)
+
+        return x, y, yo, name
 
     def __len__(self):
         return len(self.volpaths)
@@ -84,11 +57,10 @@ class Brats_loadall_nii(Dataset):
 class Brats_loadall_test_nii(Dataset):
     def __init__(self, transforms='', root=None, test_file='test.txt', num_cls=4):
         data_file_path = os.path.join('/work/H2020DeciderFicarra/asaporita/Progetto_AI_Medical_Imaging', test_file)
-        #df = pd.read_csv(data_file_path)
-        #datalist = df['case']
+
         with open(data_file_path, 'r') as f:
-            datalist = [i.strip() for i in f.readlines()] #251 elements
-        #datalist.sort()
+            datalist = [i.strip() for i in f.readlines()] # 251 elements
+
         volpaths = []
         for dataname in datalist:
             volpaths.append(os.path.join(root, 'vol', dataname+'_vol.npy'))
@@ -118,7 +90,7 @@ class Brats_loadall_test_nii(Dataset):
         yo = np.ascontiguousarray(yo.transpose(0, 4, 1, 2, 3))
         yo = torch.squeeze(torch.from_numpy(yo), dim=0) 
 
-        x = np.ascontiguousarray(x.transpose(0, 4, 1, 2, 3))# [Bsize,channels,Height,Width,Depth]
+        x = np.ascontiguousarray(x.transpose(0, 4, 1, 2, 3)) # [B, C, H, W, D]
         y = np.ascontiguousarray(y)
 
         x = torch.squeeze(torch.from_numpy(x), dim=0)
@@ -132,15 +104,13 @@ class Brats_loadall_test_nii(Dataset):
 class Brats_loadall_val_nii(Dataset):
     def __init__(self, transforms='', root=None, val_file='val.txt', num_cls=4):
         data_file_path = os.path.join('/work/H2020DeciderFicarra/asaporita/Progetto_AI_Medical_Imaging', val_file)
-        #df = pd.read_csv(data_file_path)
-        #datalist = df['case']
         with open(data_file_path, 'r') as f:
             datalist = [i.strip() for i in f.readlines()]
-        #datalist.sort()
+
         volpaths = []
         for dataname in datalist:
             volpaths.append(os.path.join(root, 'vol', dataname+'_vol.npy'))
-        self.volpaths = volpaths #125 elements
+        self.volpaths = volpaths # 125 elements
         self.transforms = eval(transforms or 'Identity()')
         self.names = datalist
         self.num_cls = num_cls
@@ -164,11 +134,11 @@ class Brats_loadall_val_nii(Dataset):
         yo = np.ascontiguousarray(yo.transpose(0, 4, 1, 2, 3))
         yo = torch.squeeze(torch.from_numpy(yo), dim=0) 
 
-        x = np.ascontiguousarray(x.transpose(0, 4, 1, 2, 3))# [Bsize,channels,Height,Width,Depth]
+        x = np.ascontiguousarray(x.transpose(0, 4, 1, 2, 3)) # [B, C, H, W, D]
         y = np.ascontiguousarray(y)
 
-        x = torch.squeeze(torch.from_numpy(x), dim=0) #[Channels, Height, Width, Depth]
-        y = torch.squeeze(torch.from_numpy(y), dim=0) #[Height, Width, Depth]
+        x = torch.squeeze(torch.from_numpy(x), dim=0) 
+        y = torch.squeeze(torch.from_numpy(y), dim=0) 
 
         return x, y, yo, name
 

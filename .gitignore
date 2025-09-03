@@ -5,7 +5,9 @@ data/transforms.py
 __pycache__/
 slurm_out/
 slurm_templates/
+wandb/
+results/
+nnUNet_preprocessed/
 
-nnFormer/
-Pytorch-UNet/
-nnUNet/
+nnFormer_conversion_BRATS2023.py
+nnUnet_conversion_BRATS2023.py

@@ -1,11 +1,16 @@
 # import math
 import random
-import collections
 import numpy as np 
 import torch 
 from scipy import ndimage 
 from scipy.ndimage import rotate
 import random 
+import collections
+import collections.abc
+collections.Sequence = collections.abc.Sequence
+
+import numpy as np
+import random
 
 class Uniform(object): 
     def __init__(self, a, b): 
@@ -89,7 +94,7 @@ class RandomRotion(Base):
         return img
         
     def __str__(self): 
-        return 'RandomRotion(axes={},Angle:{}'.format(self.axes_buffer, self.angle_buffer)
+        return 'RandomRotion(axes={}, angle={})'.format(self.axes_buffer, self.angle_buffer)
     
 class RandomFlip(Base): # mirror flip across all x,y,z 
     def __init__(self,axis=0): 
@@ -99,9 +104,9 @@ class RandomFlip(Base): # mirror flip across all x,y,z
         self.z_buffer = None 
     
     def sample(self, *shape): 
-        self.x_buffer = np.random.choice([True,False]) 
-        self.y_buffer = np.random.choice([True,False]) 
-        self.z_buffer = np.random.choice([True,False]) 
+        self.x_buffer = np.random.choice([True, False]) 
+        self.y_buffer = np.random.choice([True, False]) 
+        self.z_buffer = np.random.choice([True, False]) 
         return list(shape) 
     
     def tf(self,img,k=0): # img shape is (1, 240, 240, 155, 4) 
@@ -112,6 +117,9 @@ class RandomFlip(Base): # mirror flip across all x,y,z
         if self.z_buffer: 
             img = np.flip(img,axis=self.axis[2]) 
         return img
+    
+    def __str__(self):
+        return 'RandomFlip(x={}, y={}, z={})'.format(self.x_buffer, self.y_buffer, self.z_buffer)
         
 class CenterCrop(Base):
     def __init__(self, size):
@@ -148,7 +156,7 @@ class RandCrop3D(CenterCrop):
     
 class RandomIntensityChange(Base):
     def __init__(self,factor):
-        shift,scale = factor
+        shift, scale = factor
         assert (shift >0) and (scale >0)
         self.shift = shift
         self.scale = scale
@@ -167,8 +175,95 @@ class RandomIntensityChange(Base):
         return img * scale_factor + shift_factor
 
     def __str__(self):
-        return 'random intensity shift per channels on the input image, including'
+        return 'RandomIntensityChange(shift={}, scale={})'.format(self.shift, self.scale)
+class RandomScale3D(Base):
+    """
+    Random spatial scaling (zoom) for 3D volumes.
+    - Images (k=0): order=1 (trilinear), cval=0.0
+    - Labels (k=1): order=0 (nearest),   cval=0
+    Output size is restored via symmetric pad/crop.
+    """
+    def __init__(self, scale_range=(0.7, 1.4)):
+        self.scale_range = scale_range
+        self.scale = None  # (sH, sW, sD)
+
+    def sample(self, *shape):
+        s = np.random.uniform(self.scale_range[0], self.scale_range[1])
+        self.scale = (s, s, s)  # isotropic
+        return list(shape)
+
+    @staticmethod
+    def _pad_crop_to(vol, target, cval):
+        """
+        vol: (H,W,D) ndarray
+        target: (tH,tW,tD)
+        Returns vol symmetrically padded/cropped to target size.
+        """
+        H, W, D = vol.shape
+        tH, tW, tD = target
+
+        # --- pad if needed ---
+        ph = max(0, tH - H)
+        pw = max(0, tW - W)
+        pd = max(0, tD - D)
+        if ph or pw or pd:
+            vol = np.pad(
+                vol,
+                ((ph//2, ph - ph//2),
+                 (pw//2, pw - pw//2),
+                 (pd//2, pd - pd//2)),
+                mode='constant',
+                constant_values=cval
+            )
+            H, W, D = vol.shape
+
+        # --- crop if needed ---
+        ch = max(0, (H - tH)//2)
+        cw = max(0, (W - tW)//2)
+        cd = max(0, (D - tD)//2)
+        return vol[ch:ch+tH, cw:cw+tW, cd:cd+tD]
+
+    def tf(self, img, k=0):
+        order = 1 if k == 0 else 0
+        cval  = 0.0 if k == 0 else 0
+        N = img.shape[0]
+        H, W, D = img.shape[1:4]
+
+        if img.ndim == 5:  # (N,H,W,D,C) - image
+            C = img.shape[-1]
+            for n in range(N):
+                for c in range(C):
+                    z = ndimage.zoom(
+                        img[n, ..., c],
+                        zoom=self.scale,
+                        order=order,
+                        mode='constant',
+                        cval=cval,
+                        prefilter=(order > 1)
+                    )
+                    z = self._pad_crop_to(z, (H, W, D), cval)
+                    img[n, ..., c] = z.astype(img.dtype, copy=False)
+
+        elif img.ndim == 4:  # (N,H,W,D) - label
+            for n in range(N):
+                z = ndimage.zoom(
+                    img[n, ...],
+                    zoom=self.scale,
+                    order=order,
+                    mode='constant',
+                    cval=cval,
+                    prefilter=False  # nearest doesn't need prefilter
+                )
+                z = self._pad_crop_to(z, (H, W, D), cval)
+                img[n, ...] = z.astype(img.dtype, copy=False)
+        else:
+            raise ValueError("Unexpected shape. Expect (N,H,W,D,C) for images or (N,H,W,D) for labels.")
+
+        return img
     
+    def __str__(self):
+        return 'RandomScale3D(scale_range=({}, {}), scale={})'.format(self.scale_range[0], self.scale_range[1], self.scale)
+            
 class Pad(Base):
     def __init__(self, pad): # [0,0,0,5,0]
         self.pad = pad

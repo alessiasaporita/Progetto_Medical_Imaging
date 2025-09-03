@@ -7,13 +7,11 @@ import torch.backends.cudnn as cudnn
 import numpy as np
 import nibabel as nib
 import scipy.misc
-from utils import Parser, criterions
+from utils.criterions import DC_and_CE_loss, dice_loss, softmax_weighted_loss
 
 
 path = os.path.dirname(__file__)
 patch_size = 128
-
-
 
 def softmax_output_dice_class4(output, target):
     eps = 1e-8
@@ -68,27 +66,26 @@ def softmax_output_dice_class4(output, target):
 def test_softmax(
         test_loader,
         model,
-        model_name = 'UNet3D',
         compute_loss=True):
 
     H, W, T = 240, 240, 155
     loss = 0.0
     model.eval()
-    criterions =  torch.nn.CrossEntropyLoss() 
     vals_evaluation = AverageMeter()
     vals_separate = AverageMeter()
     one_tensor = torch.ones(1, patch_size, patch_size, patch_size).float().cuda()
 
     num_cls = 4
     class_evaluation= 'whole', 'core', 'enhancing', 'enhancing_postpro'
-    class_separate = 'ncr_net', 'edema', 'enhancing'
+    #criterion = DC_and_CE_loss({'batch_dice': True, 'smooth': 1e-5, 'do_bg': False}, {})
 
     for i, data in enumerate(test_loader): 
         # data = [x, y, yo, name]
-        x = data[0].cuda()
-        target = data[1].cuda()
-        yo = data[2].cuda()
-        names = data[3]
+        x = data[0].cuda()          # (B, 4, 133, 176, 135)
+        target = data[1].cuda()     # (B, 133, 176, 135)
+        yo = data[2].cuda()         # (B, 4, 133, 176, 135)
+        names = data[-1]
+
         _, _, H, W, Z = x.size()
 
         #########get h_ind, w_ind, z_ind for sliding windows
@@ -122,17 +119,14 @@ def test_softmax(
             for w in w_idx_list:
                 for z in z_idx_list:
                     x_input = x[:, :, h:h+patch_size, w:w+patch_size, z:z+patch_size]
-                    pred_part = model(x_input)
+                    pred_part = model(x_input)[0]
                     pred[:, :, h:h+patch_size, w:w+patch_size, z:z+patch_size] += pred_part
         pred = pred / weight
-        b = time.time()
         pred = pred[:, :, :H, :W, :T]
         
         ##### segmentation loss 
         if compute_loss:
-            seg_cross_loss = criterions.softmax_weighted_loss(pred, yo, num_cls=num_cls)
-            seg_dice_loss = criterions.dice_loss(pred, yo, num_cls=num_cls)
-            seg_loss = seg_cross_loss + seg_dice_loss
+            seg_loss = dice_loss(pred, yo, num_cls = num_cls) + softmax_weighted_loss(pred, yo, num_cls=num_cls)
             loss += seg_loss
 
         pred = torch.argmax(pred, dim=1) #(B, 133, 176, 135)
@@ -144,13 +138,13 @@ def test_softmax(
 
             vals_separate.update(scores_separate[k])
             vals_evaluation.update(scores_evaluation[k])
+
             msg += ', '.join(['{}: {:.4f}'.format(k, v) for k, v in zip(class_evaluation, scores_evaluation[k])])
-            #msg += ',' + ', '.join(['{}: {:.4f}'.format(k, v) for k, v in zip(class_separate, scores_separate[k])])
+
             logging.info(msg)
     
     msg = 'Average scores:'
     msg += ', '.join(['{}: {:.4f}'.format(k, v) for k, v in zip(class_evaluation, vals_evaluation.avg)])
-    #msg += ',' + ', '.join(['{}: {:.4f}'.format(k, v) for k, v in zip(class_separate, vals_evaluation.avg)])
     print (msg)
     if compute_loss:
         return vals_evaluation.avg, loss/(i+1)
