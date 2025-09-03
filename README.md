@@ -17,6 +17,8 @@ python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
+
+## 🧩 Pipeline: UNet3D & nnFormer 
 ### Preprocess data
 Set the data paths in `preprocess.py` and then run `python preprocess.py`.
 
