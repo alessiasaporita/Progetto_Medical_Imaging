@@ -41,7 +41,7 @@ python test.py \
   --model <MODEL_NAME> \                       # UNet3D / nnFormer
   --savepath <OUTPUT_PATH> \                   # Directory for saving results
   --resume <RESUME_PATH> \                     # Path to the checkpoints 
-  --batch_size <BATCH_SIZE> \                  # Batch size
+  --deep_supervision                           # Set deep supervision if you have used it during training
 ```
 
 ## References
