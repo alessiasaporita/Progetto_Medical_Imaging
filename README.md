@@ -4,6 +4,14 @@ This repository contains all materials necessary to reproduce [UNet3D](https://l
 ## 📖 Introduction
 Brain tumor segmentation is a key challenge in medical imaging, requiring the joint use of four imaging modalities to precisely identify tumor regions. Most existing approaches have been benchmarked mainly on the BraTS 2018 dataset, which contains only $285$ volumes. In this work, we reproduce and thoroughly analyze the most relevant models on the larger and more diverse BraTS 2023 dataset, consisting of $1,251$ volumes. Our experiments demonstrate that nnFormer achieve performance comparable to that of UNet3D on the BraTS 2023 dataset.
 
+## 🔗 Checkpoints
+
+| Model   | Weights |
+|------------|------------|
+| UNet3D     | [Download](https://huggingface.co/alessiasaporita/UNet3D_Brats23) |
+| nnFormer   | [Download](https://huggingface.co/alessiasaporita/nnFormer_Brats23) |
+
+
 ## 📊 Results on BraTS 2023
 | Model         | ET        | TC        | WT        | Avg              |
 |---------------|-----------|-----------|-----------|------------------|
