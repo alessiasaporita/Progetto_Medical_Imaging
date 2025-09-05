@@ -47,7 +47,7 @@ python train.py \
   --num_epochs <MAX_EPOCHS>   \                # Total number of training epochs
   --model <MODEL_NAME> \                       # UNet3D / nnFormer
   --savepath <OUTPUT_PATH> \                   # Directory for saving checkpoints 
-  --deep_supervision                           # Enable deep supervision
+  --deep_supervision \                         # Enable deep supervision
   --val_check <VAL_CHECK>                      # Number of epochs between validations
 ```
 
