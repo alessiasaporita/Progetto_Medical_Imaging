@@ -7,7 +7,7 @@ import torch.backends.cudnn as cudnn
 import numpy as np
 import nibabel as nib
 import scipy.misc
-from utils.criterions import DC_and_CE_loss, dice_loss, softmax_weighted_loss
+from utils.criterions import dice_loss, softmax_weighted_loss
 
 
 path = os.path.dirname(__file__)
@@ -81,10 +81,11 @@ def test_softmax(
 
     for i, data in enumerate(test_loader): 
         # data = [x, y, yo, name]
-        x = data[0].cuda()          # (B, 4, 133, 176, 135)
-        target = data[1].cuda()     # (B, 133, 176, 135)
-        yo = data[2].cuda()         # (B, 4, 133, 176, 135)
+        x = data[0].cuda()          # (B, 4, H, W, D)
+        target = data[1].cuda()     # (B, H, W, D)
+        yo = data[2].cuda()         # (B, 4, H, W, D)
         names = data[-1]
+        print(f"{i}: {names[0]}")
 
         _, _, H, W, Z = x.size()
 

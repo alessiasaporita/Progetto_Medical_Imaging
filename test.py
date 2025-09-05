@@ -13,7 +13,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--model', default="UNet3D", type=str, choices=['UNet3D', 'nnFormer'])
 parser.add_argument('--savepath', default=None, type=str)
 parser.add_argument('--resume', default=None, type=str)
-parser.add_argument('--test_file', default='datalist/test.text', type=str)
+parser.add_argument('--test_file', default='datalist/test.txt', type=str)
 parser.add_argument('--datapath', default="/work/grana_neuro/missing_modalities/BRATS2023_Training_npy", type=str)
 parser.add_argument('--deep_supervision', action='store_true', default=False)
 path = os.path.dirname(__file__)
@@ -46,11 +46,11 @@ if __name__ == '__main__':
         raise ValueError(f"Unknown model {args.model}")
     
     model = torch.nn.DataParallel(model).cuda()
-    checkpoint = torch.load(args.resume)
+    checkpoint = torch.load(args.resume, weights_only=False)
     model.load_state_dict(checkpoint['state_dict'])
     best_epoch = checkpoint['epoch'] + 1
     out_path = args.savepath
-    output_path = f"{out_path}_{best_epoch}.txt"
+    output_path = f"{out_path}_{args.model}_{best_epoch}.txt"
 
     with torch.no_grad():
         print('###########test set wi/wo postprocess###########')

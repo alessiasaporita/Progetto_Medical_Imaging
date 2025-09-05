@@ -14,7 +14,7 @@ from models.UNet import *
 from models.nnFormer import nnFormer
 from data.data_augmentation import *
 from data.dataset import Brats_loadall_nii, Brats_loadall_val_nii
-from utils.criterions import DC_and_CE_loss, dice_loss, softmax_weighted_loss
+from utils.criterions import dice_loss, softmax_weighted_loss
 from utils.parser import setup 
 from utils.lr_scheduler import LR_Scheduler, MultiEpochsDataLoader 
 from predict import test_softmax

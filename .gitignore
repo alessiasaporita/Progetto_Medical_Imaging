@@ -11,3 +11,4 @@ nnUNet_preprocessed/
 
 nnFormer_conversion_BRATS2023.py
 nnUnet_conversion_BRATS2023.py
+results*.txt

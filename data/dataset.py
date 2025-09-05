@@ -78,7 +78,6 @@ class Brats_loadall_test_nii(Dataset):
         segpath = volpath.replace('vol', 'seg')
         y = np.load(segpath).astype(np.uint8)
         x, y = x[None, ...], y[None, ...]
-
         x,y = self.transforms([x, y])
 
         # target required for models that require the segmentation as one-hot encoded targets, such as Dice loss.
